@@ -1,0 +1,6 @@
+@WebApiCore10.RustApi_HostAddress = http://localhost:5118
+
+GET {{WebApiCore10.RustApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
