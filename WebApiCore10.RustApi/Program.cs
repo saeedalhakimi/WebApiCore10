@@ -1,5 +1,10 @@
 using Asp.Versioning;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Serilog;
+using WebApiCore10.RustApi.Application.Extensions;
+using WebApiCore10.RustApi.Infrastructure.Data.SQLs.EFCore;
+using WebApiCore10.RustApi.Infrastructure.Data.SQLs.EFCore.Models;
 using WebApiCore10.RustApi.Presentation.Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -32,9 +37,36 @@ builder.Services.AddApiVersioning(options =>
         options.SubstituteApiVersionInUrl = true;
     });
 
-// Add services to the container.
-
+// --------------------------------------------------------
+// Services & DI
+// --------------------------------------------------------
 builder.Services.AddControllers();
+builder.Services.AddApplicationRegistrationServices();
+
+//--------------------------------------------------------
+//DBContxt 
+//--------------------------------------------------------
+builder.Services.AddDbContext<DataContext>(options =>
+                   options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
+{
+    // Password settings
+    options.Password.RequireDigit = true;
+    options.Password.RequireLowercase = true;
+    options.Password.RequireUppercase = true;
+    options.Password.RequireNonAlphanumeric = true;
+    options.Password.RequiredLength = 8;
+
+    // Optional extras
+    options.User.RequireUniqueEmail = true;
+})
+       .AddEntityFrameworkStores<DataContext>()
+       .AddDefaultTokenProviders();
+
+
+
+
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 

@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="DoimanDlls/DoimanDlls.csproj" />
+  <Project Path="SharedDll/SharedDll.csproj" />
   <Project Path="WebApiCore10.RustApi/WebApiCore10.RustApi.csproj" />
 </Solution>
