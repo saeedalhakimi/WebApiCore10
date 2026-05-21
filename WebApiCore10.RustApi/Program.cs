@@ -1,10 +1,16 @@
 using Asp.Versioning;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using System.Text;
 using WebApiCore10.RustApi.Application.Extensions;
+using WebApiCore10.RustApi.Application.Services.JWTServices;
 using WebApiCore10.RustApi.Infrastructure.Data.SQLs.EFCore;
 using WebApiCore10.RustApi.Infrastructure.Data.SQLs.EFCore.Models;
+using WebApiCore10.RustApi.Infrastructure.Data.SQLs.EFCore.Seeders;
+using WebApiCore10.RustApi.Presentation.Filters;
 using WebApiCore10.RustApi.Presentation.Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -40,7 +46,10 @@ builder.Services.AddApiVersioning(options =>
 // --------------------------------------------------------
 // Services & DI
 // --------------------------------------------------------
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ValidateModelAttribute>();
+});
 builder.Services.AddApplicationRegistrationServices();
 
 //--------------------------------------------------------
@@ -64,7 +73,54 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
        .AddEntityFrameworkStores<DataContext>()
        .AddDefaultTokenProviders();
 
+//----------------------------------------------------------
+//JWT settings
+//----------------------------------------------------------
+var jwtSettings = new JwtSettings();
+builder.Configuration.Bind(nameof(JwtSettings), jwtSettings);
 
+var jwtSection = builder.Configuration.GetSection(nameof(JwtSettings));
+builder.Services.Configure<JwtSettings>(jwtSection);
+
+jwtSettings.Key = jwtSettings.GetSecretKey();
+
+
+if (jwtSettings == null || string.IsNullOrEmpty(jwtSettings.Key))
+{
+    throw new InvalidOperationException("JwtSettings configuration is missing or invalid.");
+}
+
+builder.Services.AddSingleton<IJwtService, JwtService>();
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+       .AddJwtBearer(options =>
+       {
+           options.SaveToken = true;
+           options.TokenValidationParameters = new TokenValidationParameters
+           {
+               ValidateIssuer = true,
+               ValidateAudience = true,
+               ValidateLifetime = true,
+               ValidateIssuerSigningKey = true,
+               ValidIssuer = jwtSettings.Issuer,
+               ValidAudience = jwtSettings.Audience,
+               IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.Key))
+           };
+       });
+
+//----------------------------------------------------------
+// Authorization
+//----------------------------------------------------------
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("AdminOnly", policy => policy.RequireRole("Admin", "SystemAdmin")); // Accepts either rol
+    options.AddPolicy("ManagerOnly", policy => policy.RequireRole("Manager"));
+    options.AddPolicy("UserOnly", policy => policy.RequireRole("User"));
+});
 
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -97,5 +153,17 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// --------------------------------------------------------
+// Seed Roles
+// --------------------------------------------------------
+using (var scope = app.Services.CreateScope())
+{
+    var roleManager =
+        scope.ServiceProvider
+            .GetRequiredService<RoleManager<IdentityRole>>();
+
+    await RoleSeeder.SeedRolesAsync(roleManager);
+}
 
 app.Run();

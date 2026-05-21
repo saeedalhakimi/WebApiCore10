@@ -11,7 +11,6 @@
         string FirstName,
         string LastName,
         DateTime DateOfBirth,
-        string? CurrentCity,
         string CorrelationId
     );
 }

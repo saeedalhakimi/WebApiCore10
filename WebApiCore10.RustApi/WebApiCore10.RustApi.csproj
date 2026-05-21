@@ -31,7 +31,6 @@
   <ItemGroup>
     <Folder Include="Application\Services\AuthHandlingServices\Contracts\Requests\" />
     <Folder Include="Application\Services\AuthHandlingServices\Queries\" />
-    <Folder Include="Controllers\V1\" />
   </ItemGroup>
 
   <ItemGroup>
