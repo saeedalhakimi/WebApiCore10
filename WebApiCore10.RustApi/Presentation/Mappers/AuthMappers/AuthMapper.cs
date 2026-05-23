@@ -16,5 +16,13 @@ namespace WebApiCore10.RustApi.Presentation.Mappers.AuthMappers
                 CorrelationId: correlationId
             );
         }
+
+        public static RefreshTokenCommand ToRefreshTokenCommand(RefreshTokenDto dto, string correlationId)
+        {
+            return new RefreshTokenCommand(
+                RefreshToken: dto.RefreshToken,
+                CorrelationId: correlationId
+            );
+        }
     }
 }

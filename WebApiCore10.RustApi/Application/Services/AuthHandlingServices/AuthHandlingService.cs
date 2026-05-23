@@ -3,6 +3,7 @@ using DoimanDlls.UserProfiles;
 using DoimanDlls.UserProfiles.ValueObjects;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using SharedDll.Errors;
 using SharedDll.Results;
 using WebApiCore10.RustApi.Application.Services.AuthHandlingServices.Commands;
 using WebApiCore10.RustApi.Application.Services.AuthHandlingServices.Contracts.Responses;
@@ -218,5 +219,261 @@ namespace WebApiCore10.RustApi.Application.Services.AuthHandlingServices
                         command.CorrelationId);
             }
         }
+
+        public async Task<OperationResult<ResponseWithTokensDto>> 
+            RefreshTokenCommandHandler(
+                RefreshTokenCommand command, 
+                CancellationToken cancellationToken)
+        {
+            try
+            {
+                // --------------------------------------------------
+                // 1️ Execution Strategy
+                // --------------------------------------------------
+                var strategy =
+                    _dataContext.Database.CreateExecutionStrategy();
+
+                return await strategy.ExecuteAsync(async () =>
+                {
+                    // --------------------------------------------------
+                    // 2️ Begin Transaction
+                    // --------------------------------------------------
+                    await using var transaction =
+                        await _dataContext.Database
+                            .BeginTransactionAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 3️ Find Refresh Token
+                    // --------------------------------------------------
+                    var refreshToken =
+                        await _dataContext.RefreshTokens
+                            .FirstOrDefaultAsync(
+                                rt => rt.Token == command.RefreshToken,
+                                cancellationToken);
+
+                    if (refreshToken is null)
+                    {
+                        _logger.LogWarning(
+                            "Refresh token not found.");
+
+                        return OperationResult<ResponseWithTokensDto>
+                            .Failure(
+                                new Error(
+                                    ErrorCode.Unauthorized,
+                                    "Invalid refresh token.",
+                                    command.CorrelationId));
+                    }
+
+                    // --------------------------------------------------
+                    // 4️ Reuse Detection / Expired / Revoked
+                    // --------------------------------------------------
+                    if (refreshToken.IsUsed ||
+                        refreshToken.IsRevoked ||
+                        refreshToken.ExpiryDate <= DateTime.UtcNow)
+                    {
+                        _logger.LogWarning(
+                            "Refresh token reuse detected for UserId: {UserId}",
+                            refreshToken.IdentityId);
+
+                        // Revoke ALL active refresh tokens for this user
+                        var userTokens =
+                            await _dataContext.RefreshTokens
+                                .Where(rt =>
+                                    rt.IdentityId == refreshToken.IdentityId &&
+                                    !rt.IsRevoked)
+                                .ToListAsync(cancellationToken);
+
+                        foreach (var token in userTokens)
+                        {
+                            token.IsUsed = true;
+                            token.IsRevoked = true;
+                        }
+
+                        await _dataContext
+                            .SaveChangesAsync(cancellationToken);
+
+                        await transaction
+                            .CommitAsync(cancellationToken);
+
+                        return OperationResult<ResponseWithTokensDto>
+                            .Failure(
+                                new Error(
+                                    ErrorCode.Unauthorized,
+                                    "Refresh token reuse detected. Please log in again.",
+                                    command.CorrelationId));
+                    }
+
+                    // --------------------------------------------------
+                    // 5️ Find User
+                    // --------------------------------------------------
+                    var user =
+                        await _userManager.FindByIdAsync(
+                            refreshToken.IdentityId);
+
+                    var validation =
+                        await ValidateUserCanAuthenticate<ResponseWithTokensDto>(
+                            user,
+                            command.CorrelationId,
+                            nameof(RefreshTokenCommandHandler));
+
+                    if (!validation.IsSuccess)
+                    {
+                        return validation;
+                    }
+
+                    // --------------------------------------------------
+                    // 6️ Retrieve User Profile
+                    // --------------------------------------------------
+                    var userProfile =
+                        await _dataContext.UserProfiles
+                            .FirstOrDefaultAsync(
+                                up => up.IdentityID == user!.Id,
+                                cancellationToken);
+
+                    if (userProfile is null)
+                    {
+                        _logger.LogWarning(
+                            "UserProfile not found for UserId: {UserId}",
+                            user!.Id);
+
+                        return OperationResult<ResponseWithTokensDto>
+                            .Failure(
+                                new Error(
+                                    ErrorCode.NotFound,
+                                    "User profile not found.",
+                                    command.CorrelationId));
+                    }
+
+                    // --------------------------------------------------
+                    // 7 Rotate Current Refresh Token
+                    // --------------------------------------------------
+                    refreshToken.IsUsed = true;
+                    refreshToken.IsRevoked = true;
+
+                    // --------------------------------------------------
+                    // 8 Generate New Tokens
+                    // --------------------------------------------------
+                    var roles =
+                        (await _userManager.GetRolesAsync(user!))
+                            .ToList();
+
+                    var newAccessToken =
+                        _jwtService.GenerateAccessToken(
+                            user!,
+                            userProfile,
+                            roles);
+
+                    var newRefreshToken =
+                        _jwtService.GenerateRefreshToken();
+
+                    // --------------------------------------------------
+                    // 9️ Store New Refresh Token
+                    // --------------------------------------------------
+                    await _dataContext.RefreshTokens
+                        .AddAsync(
+                            new RefreshToken
+                            {
+                                Token = newRefreshToken,
+                                IdentityId = user!.Id,
+                                ExpiryDate =
+                                    _jwtService.GetRefreshTokenExpiryDate()
+                            },
+                            cancellationToken);
+
+                    // --------------------------------------------------
+                    // 10 Save Changes
+                    // --------------------------------------------------
+                    await _dataContext
+                        .SaveChangesAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 11 Commit Transaction
+                    // --------------------------------------------------
+                    await transaction
+                        .CommitAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 12 Success
+                    // --------------------------------------------------
+                    return OperationResult<ResponseWithTokensDto>
+                        .Success(
+                            new ResponseWithTokensDto
+                            {
+                                AccessToken = newAccessToken,
+                                RefreshToken = newRefreshToken,
+                                Message = "Token refreshed successfully."
+                            });
+
+                });
+            }
+            catch (DomainException ex)
+            {
+                return _errorHandlingService
+                    .HandleDomainException<ResponseWithTokensDto>(
+                        ex,
+                        nameof(RefreshTokenCommandHandler),
+                        command.CorrelationId);
+            }
+            catch (OperationCanceledException ex)
+            {
+                return _errorHandlingService
+                    .HandleCancelationTokenException<ResponseWithTokensDto>(
+                        ex,
+                        nameof(RefreshTokenCommandHandler),
+                        command.CorrelationId);
+            }
+            catch (Exception ex)
+            {
+                return _errorHandlingService
+                    .HandleUnknownExceptions<ResponseWithTokensDto>(
+                        ex,
+                        nameof(RefreshTokenCommandHandler),
+                        command.CorrelationId);
+            }
+        }
+
+
+        
+        
+        // -------------------- HELPER METHODS --------------------
+        private async Task<OperationResult<T>> ValidateUserCanAuthenticate<T>(ApplicationUser? user, string correlationId, string operationName)
+        {
+            if (user is null)
+            {
+                var errorMessage = "Invalid username or password.";
+                _logger.LogWarning(errorMessage);
+                return OperationResult<T>
+                    .Failure(
+                        new Error(
+                            ErrorCode.Unauthorized,
+                            details: errorMessage,
+                            correlationId: correlationId));
+            }
+
+            if (!user!.IsActive)
+            {
+                _logger.LogWarning("User {user} is no longer active.", user.Email);
+                return OperationResult<T>
+                    .Failure(
+                        new Error(
+                            ErrorCode.Unauthorized,
+                            details: $"Access to '{operationName}' was denied due to insufficient permissions.",
+                            correlationId: correlationId));
+            }
+
+            if (await _userManager.IsLockedOutAsync(user))
+            {
+                _logger.LogWarning($"Account is locked.. Contact Admin..");
+                return OperationResult<T>
+                    .Failure(
+                        new Error(
+                            ErrorCode.Unauthorized,
+                            details: $"User '{user}' is currently locked. Please try again later or contact support.",
+                            correlationId: correlationId));
+            }
+
+            return OperationResult<T>.Success(default!);
+        }
+
     }
 }

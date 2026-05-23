@@ -7,6 +7,6 @@ namespace WebApiCore10.RustApi.Application.Services.AuthHandlingServices
     public interface IAuthHandlingService
     {
         Task<OperationResult<ResponseWithTokensDto>> RegisterUserCommandHandler(RegisterUserCommand command, CancellationToken cancellationToken);
-
+        Task<OperationResult<ResponseWithTokensDto>> RefreshTokenCommandHandler(RefreshTokenCommand command, CancellationToken cancellationToken);
     }
 }
