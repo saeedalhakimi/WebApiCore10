@@ -41,6 +41,10 @@ namespace WebApiCore10.RustApi.Application.Services.AuthHandlingServices
             _jwtService = jwtService;
         }
 
+        // --------------------------------------------------
+        // Command Handlers
+        // --------------------------------------------------
+
         public async Task<OperationResult<ResponseWithTokensDto>>
             RegisterUserCommandHandler(
                 RegisterUserCommand command,
@@ -216,6 +220,209 @@ namespace WebApiCore10.RustApi.Application.Services.AuthHandlingServices
                     .HandleUnknownExceptions<ResponseWithTokensDto>(
                         ex,
                         nameof(RegisterUserCommandHandler),
+                        command.CorrelationId);
+            }
+        }
+
+        public async Task<OperationResult<ResponseWithTokensDto>>
+            LoginUserCommandHandler(
+                LoginUserCommand command,
+                CancellationToken cancellationToken)
+        {
+            try
+            {
+                // --------------------------------------------------
+                // 1️ Find User
+                // --------------------------------------------------
+                var user =
+                    await _userManager.FindByEmailAsync(
+                        command.Email);
+
+                var validation =
+                    await ValidateUserCanAuthenticate<ResponseWithTokensDto>(
+                        user,
+                        command.CorrelationId,
+                        nameof(LoginUserCommandHandler));
+
+                if (!validation.IsSuccess)
+                {
+                    return validation;
+                }
+
+                // --------------------------------------------------
+                // 2️ Validate Password
+                // --------------------------------------------------
+                var isPasswordValid =
+                    await _userManager.CheckPasswordAsync(
+                        user!,
+                        command.Password);
+
+                if (!isPasswordValid)
+                {
+                    // Increment failed attempts
+                    await _userManager.AccessFailedAsync(user!);
+
+                    var failedAttempts =
+                        await _userManager.GetAccessFailedCountAsync(user!);
+
+                    var maxAttempts =
+                        _userManager.Options.Lockout.MaxFailedAccessAttempts;
+
+                    var attemptsLeft =
+                        Math.Max(0, maxAttempts - failedAttempts);
+
+                    var isNowLocked =
+                        await _userManager.IsLockedOutAsync(user!);
+
+                    var errorMessage =
+                         isNowLocked
+                             ? "Your account has been locked due to multiple failed login attempts. Please try again later or contact support."
+                             : $"Invalid username or password.";
+
+                    _logger.LogWarning(
+                        "Failed login attempt for Email: {Email}",
+                        command.Email);
+
+                    return OperationResult<ResponseWithTokensDto>
+                        .Failure(
+                            new Error(
+                                ErrorCode.Unauthorized,
+                                errorMessage,
+                                command.CorrelationId));
+                }
+
+                // --------------------------------------------------
+                // 3️ Reset Failed Access Count
+                // --------------------------------------------------
+                await _userManager
+                    .ResetAccessFailedCountAsync(user!);
+
+                // --------------------------------------------------
+                // 4️ Retrieve User Profile
+                // --------------------------------------------------
+                var userProfile =
+                    await _dataContext.UserProfiles
+                        .FirstOrDefaultAsync(
+                            up => up.IdentityID == user!.Id,
+                            cancellationToken);
+
+                if (userProfile is null)
+                {
+                    _logger.LogWarning(
+                        "UserProfile not found for UserId: {UserId}",
+                        user!.Id);
+
+                    return OperationResult<ResponseWithTokensDto>
+                        .Failure(
+                            new Error(
+                                ErrorCode.NotFound,
+                                "User profile not found.",
+                                command.CorrelationId));
+                }
+
+                // --------------------------------------------------
+                // 5️ Retrieve Roles
+                // --------------------------------------------------
+                var roles =
+                    (await _userManager.GetRolesAsync(user!))
+                        .ToList();
+
+                // --------------------------------------------------
+                // 6️ Generate Tokens
+                // --------------------------------------------------
+                var accessToken =
+                    _jwtService.GenerateAccessToken(
+                        user!,
+                        userProfile,
+                        roles);
+
+                var refreshToken =
+                    _jwtService.GenerateRefreshToken();
+
+                // --------------------------------------------------
+                // 7️ Execution Strategy
+                // --------------------------------------------------
+                var strategy =
+                    _dataContext.Database.CreateExecutionStrategy();
+
+                return await strategy.ExecuteAsync(async () =>
+                {
+                    // --------------------------------------------------
+                    // 8️ Begin Transaction
+                    // --------------------------------------------------
+                    await using var transaction =
+                        await _dataContext.Database
+                            .BeginTransactionAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 9️ Store Refresh Token
+                    // --------------------------------------------------
+                    await _dataContext.RefreshTokens
+                        .AddAsync(
+                            new RefreshToken
+                            {
+                                Token = refreshToken,
+                                IdentityId = user!.Id,
+                                ExpiryDate =
+                                    _jwtService.GetRefreshTokenExpiryDate()
+                            },
+                            cancellationToken);
+
+                    // --------------------------------------------------
+                    // 🔟 Save Changes
+                    // --------------------------------------------------
+                    await _dataContext
+                        .SaveChangesAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 11️ Commit Transaction
+                    // --------------------------------------------------
+                    await transaction
+                        .CommitAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 12️ Success
+                    // --------------------------------------------------
+                    return OperationResult<ResponseWithTokensDto>
+                        .Success(
+                            new ResponseWithTokensDto
+                            {
+                                AccessToken = accessToken,
+                                RefreshToken = refreshToken,
+                                Message = "Login successful."
+                            });
+                });
+            }
+            catch (DomainException ex)
+            {
+                return _errorHandlingService
+                    .HandleDomainException<ResponseWithTokensDto>(
+                        ex,
+                        nameof(LoginUserCommandHandler),
+                        command.CorrelationId);
+            }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Login operation was cancelled.");
+
+                return _errorHandlingService
+                    .HandleCancelationTokenException<ResponseWithTokensDto>(
+                        ex,
+                        nameof(LoginUserCommandHandler),
+                        command.CorrelationId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Unexpected error occurred during login.");
+
+                return _errorHandlingService
+                    .HandleUnknownExceptions<ResponseWithTokensDto>(
+                        ex,
+                        nameof(LoginUserCommandHandler),
                         command.CorrelationId);
             }
         }
@@ -432,10 +639,109 @@ namespace WebApiCore10.RustApi.Application.Services.AuthHandlingServices
             }
         }
 
+        public async Task<OperationResult<bool>>
+            LogoutCommandHandler(
+                LogoutCommand command,
+                CancellationToken cancellationToken)
+        {
+            try
+            {
+                // --------------------------------------------------
+                // 1️ Execution Strategy
+                // --------------------------------------------------
+                var strategy =
+                    _dataContext.Database.CreateExecutionStrategy();
 
-        
-        
-        // -------------------- HELPER METHODS --------------------
+                return await strategy.ExecuteAsync(async () =>
+                {
+                    // --------------------------------------------------
+                    // 2️ Begin Transaction
+                    // --------------------------------------------------
+                    await using var transaction =
+                        await _dataContext.Database
+                            .BeginTransactionAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 3️ Find Current Refresh Token
+                    // --------------------------------------------------
+                    var currentToken =
+                        await _dataContext.RefreshTokens
+                            .FirstOrDefaultAsync(
+                                rt => rt.Token == command.RefreshToken,
+                                cancellationToken);
+
+                    if (currentToken is null)
+                    {
+                        _logger.LogWarning(
+                            "Logout failed. Refresh token not found.");
+
+                        return OperationResult<bool>
+                            .Failure(
+                                new Error(
+                                    ErrorCode.NotFound,
+                                    "Refresh token not found.",
+                                    command.CorrelationId));
+                    }
+
+                    // --------------------------------------------------
+                    // 4️ Retrieve All Active Tokens For User
+                    // --------------------------------------------------
+                    var tokens =
+                        await _dataContext.RefreshTokens
+                            .Where(rt =>
+                                rt.IdentityId == currentToken.IdentityId &&
+                                !rt.IsRevoked)
+                            .ToListAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 5️ Revoke All Tokens
+                    // --------------------------------------------------
+                    foreach (var token in tokens)
+                    {
+                        token.IsRevoked = true;
+                        token.IsUsed = true;
+                    }
+
+                    // --------------------------------------------------
+                    // 6️ Save Changes
+                    // --------------------------------------------------
+                    await _dataContext
+                        .SaveChangesAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 7️ Commit Transaction
+                    // --------------------------------------------------
+                    await transaction
+                        .CommitAsync(cancellationToken);
+
+                    // --------------------------------------------------
+                    // 8️ Success
+                    // --------------------------------------------------
+                    return OperationResult<bool>
+                        .Success(true);
+                });
+            }
+            catch (OperationCanceledException ex)
+            {
+                return _errorHandlingService
+                    .HandleCancelationTokenException<bool>(
+                        ex,
+                        nameof(LogoutCommandHandler),
+                        command.CorrelationId);
+            }
+            catch (Exception ex)
+            {
+                return _errorHandlingService
+                    .HandleUnknownExceptions<bool>(
+                        ex,
+                        nameof(LogoutCommandHandler),
+                        command.CorrelationId);
+            }
+        }
+
+        //--------------------------------------------------
+        //Helper methods
+        //--------------------------------------------------
         private async Task<OperationResult<T>> ValidateUserCanAuthenticate<T>(ApplicationUser? user, string correlationId, string operationName)
         {
             if (user is null)

@@ -42,6 +42,23 @@ namespace WebApiCore10.RustApi.Controllers.V1.AuthCtr
             return Created(string.Empty, result.Data);
         }
 
+        [HttpPost(ApiRoutes.AuthRoutes.Login, Name = "Login")]
+        [ProducesResponseType(typeof(ResponseWithTokensDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        [ValidateModel]
+        public async Task<ActionResult<ResponseWithTokensDto>> Login([FromBody] LoginUserDto dto, CancellationToken cancellationToken)
+        {
+            using var _ = BeginRequestScope();
+
+            var command = AuthMapper.ToLoginUserCommand(dto, CorrelationId);
+            var result = await _authHandlingService.LoginUserCommandHandler(command, cancellationToken);
+            if (!result.IsSuccess) return HandleResult(result);
+
+            return Ok(result.Data);
+        }
+
         [HttpPost(ApiRoutes.AuthRoutes.RefreshToken, Name = "RefreshToken")]
         [ProducesResponseType(typeof(ResponseWithTokensDto), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -57,6 +74,23 @@ namespace WebApiCore10.RustApi.Controllers.V1.AuthCtr
             if (!result.IsSuccess) return HandleResult(result);
 
             return Ok(result.Data);
+        }
+
+        [HttpPost(ApiRoutes.AuthRoutes.Logout, Name = "Logout")]
+        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        [ValidateModel]
+        public async Task<IActionResult> Logout([FromBody] RefreshTokenDto dto, CancellationToken cancellationToken)
+        {
+            using var _ = BeginRequestScope();
+
+            var command = AuthMapper.ToLogoutCommand(dto, CorrelationId);
+            var result = await _authHandlingService.LogoutCommandHandler(command, cancellationToken);
+            if (!result.IsSuccess) return HandleResult(result);
+
+            return NoContent();
         }
     }
 }
