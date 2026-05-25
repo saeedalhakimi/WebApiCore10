@@ -52,18 +52,7 @@ namespace WebApiCore10.RustApi.Application.Services.AuthHandlingServices
         {
             try
             {
-                // --------------------------------------------------
-                // 1️ Check if user already exists
-                // --------------------------------------------------
-                if (await _userManager.FindByEmailAsync(command.Email)
-                    is not null)
-                {
-                    return _errorHandlingService
-                        .HandleResourceConflictError<ResponseWithTokensDto>(
-                            command.Email,
-                            command.CorrelationId);
-                }
-
+                
                 // --------------------------------------------------
                 // 3️ EF Core execution strategy
                 // --------------------------------------------------
@@ -780,6 +769,61 @@ namespace WebApiCore10.RustApi.Application.Services.AuthHandlingServices
 
             return OperationResult<T>.Success(default!);
         }
+        private async Task<OperationResult<UserProfile>>GetUserProfileAsync(ApplicationUser user, string correlationId, CancellationToken cancellationToken)
+        {
+            var userProfile =
+                await _dataContext.UserProfiles
+                    .FirstOrDefaultAsync(
+                        up => up.IdentityID == user.Id,
+                        cancellationToken);
 
+            if (userProfile is null)
+            {
+                _logger.LogWarning(
+                    "UserProfile not found for UserId: {UserId}",
+                    user.Id);
+
+                return OperationResult<UserProfile>
+                    .Failure(
+                        new Error(
+                            ErrorCode.NotFound,
+                            "User profile not found.",
+                            correlationId));
+            }
+
+            return OperationResult<UserProfile>
+                .Success(userProfile);
+        }
+        private async Task<ResponseWithTokensDto> CreateAuthenticationResponseAsync(ApplicationUser user,UserProfile userProfile,CancellationToken cancellationToken)
+        {
+            var roles =
+                (await _userManager.GetRolesAsync(user))
+                    .ToList();
+
+            var accessToken =
+                _jwtService.GenerateAccessToken(
+                    user,
+                    userProfile,
+                    roles);
+
+            var refreshToken =
+                _jwtService.GenerateRefreshToken();
+
+            await _dataContext.RefreshTokens.AddAsync(
+                new RefreshToken
+                {
+                    Token = refreshToken,
+                    IdentityId = user.Id,
+                    ExpiryDate =
+                        _jwtService.GetRefreshTokenExpiryDate()
+                },
+                cancellationToken);
+
+            return new ResponseWithTokensDto
+            {
+                AccessToken = accessToken,
+                RefreshToken = refreshToken
+            };
+        }
     }
 }

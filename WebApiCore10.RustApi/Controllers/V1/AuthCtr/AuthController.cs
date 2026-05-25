@@ -1,6 +1,7 @@
 ﻿using Asp.Versioning;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Reflection.Metadata;
 using WebApiCore10.RustApi.Application.Services.AuthHandlingServices;
 using WebApiCore10.RustApi.Application.Services.AuthHandlingServices.Contracts.Responses;
@@ -26,6 +27,7 @@ namespace WebApiCore10.RustApi.Controllers.V1.AuthCtr
         }
 
         [HttpPost(ApiRoutes.AuthRoutes.Register, Name = "Register")]
+        [EnableRateLimiting("AuthPolicy")]
         [ProducesResponseType(typeof(ResponseWithTokensDto), StatusCodes.Status201Created)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status409Conflict)]
@@ -43,6 +45,7 @@ namespace WebApiCore10.RustApi.Controllers.V1.AuthCtr
         }
 
         [HttpPost(ApiRoutes.AuthRoutes.Login, Name = "Login")]
+        [EnableRateLimiting("AuthPolicy")]
         [ProducesResponseType(typeof(ResponseWithTokensDto), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -60,6 +63,7 @@ namespace WebApiCore10.RustApi.Controllers.V1.AuthCtr
         }
 
         [HttpPost(ApiRoutes.AuthRoutes.RefreshToken, Name = "RefreshToken")]
+        [EnableRateLimiting("AuthPolicy")]
         [ProducesResponseType(typeof(ResponseWithTokensDto), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -77,6 +81,7 @@ namespace WebApiCore10.RustApi.Controllers.V1.AuthCtr
         }
 
         [HttpPost(ApiRoutes.AuthRoutes.Logout, Name = "Logout")]
+        [EnableRateLimiting("UserPolicy")]
         [ProducesResponseType(StatusCodes.Status204NoContent)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]

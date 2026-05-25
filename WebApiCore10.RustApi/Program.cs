@@ -12,6 +12,7 @@ using WebApiCore10.RustApi.Infrastructure.Data.SQLs.EFCore.Models;
 using WebApiCore10.RustApi.Infrastructure.Data.SQLs.EFCore.Seeders;
 using WebApiCore10.RustApi.Presentation.Filters;
 using WebApiCore10.RustApi.Presentation.Middlewares;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -120,6 +121,83 @@ builder.Services.AddAuthentication(options =>
            };
        });
 
+// ---------------------------------------------------------
+// Rate Limiting
+// ---------------------------------------------------------
+
+builder.Services.AddRateLimiter(options =>
+{
+    // --------------------------------------------------------
+    // Global behavior
+    // --------------------------------------------------------
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.ContentType =
+            "application/json";
+
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            new
+            {
+                error = "Too many requests. Please try again later."
+            },
+            cancellationToken);
+    };
+
+    // --------------------------------------------------------
+    // Login / Refresh / Register (strict)
+    // --------------------------------------------------------
+    options.AddPolicy("AuthPolicy", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey:
+                httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder =
+                    QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0
+            }));
+
+    // --------------------------------------------------------
+    // Authenticated users
+    // --------------------------------------------------------
+    options.AddPolicy("UserPolicy", httpContext =>
+        RateLimitPartition.GetTokenBucketLimiter(
+            partitionKey:
+                httpContext.User.Identity?.Name
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous",
+            factory: _ => new TokenBucketRateLimiterOptions
+            {
+                TokenLimit = 100,
+                TokensPerPeriod = 50,
+                ReplenishmentPeriod =
+                    TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+
+    // --------------------------------------------------------
+    // Public endpoints
+    // --------------------------------------------------------
+    options.AddPolicy("PublicPolicy", httpContext =>
+        RateLimitPartition.GetSlidingWindowLimiter(
+            partitionKey:
+                httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "unknown",
+            factory: _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0
+            }));
+});
+
 //----------------------------------------------------------
 // Authorization
 //----------------------------------------------------------
@@ -156,6 +234,7 @@ app.UseSerilogRequestLogging(options =>
 });
 
 app.UseHttpsRedirection();
+app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();
